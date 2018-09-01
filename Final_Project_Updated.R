@@ -4,18 +4,6 @@ summary(charity)
 library(DataExplorer)
 plot_histogram(charity)
 
-charity.t <- charity
-# charity.t$avhv <- log(charity.t$avhv)
-# charity.t$incm <- log(charity.t$incm)
-# charity.t$inca <- log(charity.t$inca)
-charity.t$tgif <- log(charity.t$tgif)
-charity.t$lgif <- log(charity.t$lgif)
-#charity.t$rgif <- log(charity.t$rgif)
-#charity.t$tlag <- log(charity.t$tlag)
-# charity.t$agif <- log(charity.t$agif)
-plot_histogram(charity.t)
-
-
 library(moments)
 skewness(charity$avhv)
 skewness(charity$incm)
@@ -25,8 +13,8 @@ skewness(charity$lgif)
 skewness(charity$rgif)
 skewness(charity$tlag)
 skewness(charity$agif)
-
-# par(mfrow=c(2,6))
+#EDA
+#par(mfrow=c(2,6))
 # boxplot(charity.t$tgif, col = "cyan")
 # title('Lifetime Gifts', cex.main=.85)
 # boxplot(charity.t$lgif, col = "cyan")
@@ -51,6 +39,166 @@ skewness(charity$agif)
 # title('MedianNghbrdIncome', cex.main=.85)
 # boxplot(charity.t$inca, col = "darkkhaki")
 # title('AvgNghbrdIncome', cex.main=.85)
+#library(DataExplorer)
+#plot_str(charity)
+#plot_missing(charity)
+#plot_histogram(charity)
+#plot_correlation(charity, type = 'continuous')
+
+###Transformed Variables and Data Split for LDA, logistic regression, QDA and KNN##
+charity.t <- charity
+charity.t$avhv <- log(charity.t$avhv)
+charity.t$lgif <- log(charity.t$lgif)
+
+data.train <- charity.t[charity$part=="train",]
+x.train <- data.train[,2:21]
+c.train <- data.train[,22] # donr
+n.train.c <- length(c.train) # 3984
+y.train <- data.train[c.train==1,23] # damt for observations with donr=1
+n.train.y <- length(y.train) # 1995
+
+data.valid <- charity.t[charity$part=="valid",]
+x.valid <- data.valid[,2:21]
+c.valid <- data.valid[,22] # donr
+n.valid.c <- length(c.valid) # 2018
+y.valid <- data.valid[c.valid==1,23] # damt for observations with donr=1
+n.valid.y <- length(y.valid) # 999
+
+data.test <- charity.t[charity$part=="test",]
+n.test <- dim(data.test)[1] # 2007
+x.test <- data.test[,2:21]
+
+x.train.mean <- apply(x.train, 2, mean)
+x.train.sd <- apply(x.train, 2, sd)
+x.train.std <- t((t(x.train)-x.train.mean)/x.train.sd) # standardize to have zero mean and unit sd
+apply(x.train.std, 2, mean) # check zero mean
+apply(x.train.std, 2, sd) # check unit sd
+data.train.std.c <- data.frame(x.train.std, donr=c.train) # to classify donr
+data.train.std.y <- data.frame(x.train.std[c.train==1,], damt=y.train) # to predict damt when donr=1
+
+x.valid.std <- t((t(x.valid)-x.train.mean)/x.train.sd) # standardize using training mean and sd
+data.valid.std.c <- data.frame(x.valid.std, donr=c.valid) # to classify donr
+data.valid.std.y <- data.frame(x.valid.std[c.valid==1,], damt=y.valid) # to predict damt when donr=1
+
+x.test.std <- t((t(x.test)-x.train.mean)/x.train.sd) # standardize using training mean and sd
+data.test.std <- data.frame(x.test.std)
+
+
+# linear discriminant analysis
+
+library(MASS)
+
+######################################################################
+# linear discriminant analysis 2
+model.lda2 <- lda(donr ~ reg1 + reg2 + reg3 + reg4 + home + chld + hinc + I(hinc^2) + genf + wrat + 
+                    avhv + inca + incm + npro + lgif + rgif + tdon + tlag + agif, 
+                  data.train.std.c) # include additional terms on the fly using I()
+
+# Note: strictly speaking, LDA should not be used with qualitative predictors,
+# but in practice it often is if the goal is simply to find a good predictive model
+
+post.valid.lda2 <- predict(model.lda2, data.valid.std.c)$posterior[,2] # n.valid.c post probs
+
+# calculate ordered profit function using average donation = $14.50 and mailing cost = $2
+
+profit.lda2 <- cumsum(14.5*c.valid[order(post.valid.lda2, decreasing=T)]-2)
+plot(profit.lda2) # see how profits change as more mailings are made
+n.mail.valid <- which.max(profit.lda2) # number of mailings that maximizes profits
+c(n.mail.valid, max(profit.lda2)) # report number of mailings and maximum profit
+#  Baseline Model 1329.0 11624.5
+# lda 2: 1334  11643.50
+
+cutoff.lda2 <- sort(post.valid.lda2, decreasing=T)[n.mail.valid+1] # set cutoff based on n.mail.valid
+chat.valid.lda2 <- ifelse(post.valid.lda1>cutoff.lda1, 1, 0) # mail to everyone above the cutoff
+table(chat.valid.lda2, c.valid) # classification table
+#               c.valid
+#chat.valid.lda1   0   1
+#              0 672  12
+#              1 347 987
+# check n.mail.valid = 347+987 = 1334
+# check profit = 14.5*987-2*1334 = 11643.50.
+
+### logistic regression #1 Baseline
+model.log1 <- glm(donr ~ reg1 + reg2 + reg3 + reg4 + home + chld + hinc + I(hinc^2) + genf + wrat + 
+                    avhv + incm + inca + plow + npro + tgif + lgif + rgif + tdon + tlag + agif, 
+                  data.train.std.c, family=binomial("logit"))
+
+post.valid.log1 <- predict(model.log1, data.valid.std.c, type="response") # n.valid post probs
+
+# calculate ordered profit function using average donation = $14.50 and mailing cost = $2
+
+profit.log1 <- cumsum(14.5*c.valid[order(post.valid.log1, decreasing=T)]-2)
+plot(profit.log1) # see how profits change as more mailings are made
+n.mail.valid <- which.max(profit.log1) # number of mailings that maximizes profits
+c(n.mail.valid, max(profit.log1)) # report number of mailings and maximum profit
+# 1291.0 11642.5
+
+cutoff.log1 <- sort(post.valid.log1, decreasing=T)[n.mail.valid+1] # set cutoff based on n.mail.valid
+chat.valid.log1 <- ifelse(post.valid.log1>cutoff.log1, 1, 0) # mail to everyone above the cutoff
+table(chat.valid.log1, c.valid) # classification table
+#               c.valid
+#chat.valid.log1   0   1
+#              0 709  18
+#              1 310 981
+# check n.mail.valid = 310+981 = 1291
+# check profit = 14.5*981-2*1291 = 11642.5
+
+
+##logistic regression #2##
+model.log2 <- glm(donr ~ reg1 + reg2 + reg3 + reg4 + home + chld + hinc + I(hinc^2) + genf + wrat + 
+                    avhv + plow + inca + npro + lgif + rgif + tdon + tlag + agif, 
+                  data.train.std.c, family=binomial("logit"))
+post.valid.log2 <- predict(model.log2, data.valid.std.c, type="response") # n.valid post probs
+# calculate ordered profit function using average donation = $14.50 and mailing cost = $2
+profit.log2 <- cumsum(14.5*c.valid[order(post.valid.log2, decreasing=T)]-2)
+#plot(profit.log1) # see how profits change as more mailings are made
+n.mail.valid <- which.max(profit.log2) # number of mailings that maximizes profits
+c(n.mail.valid, max(profit.log2)) # report number of mailings and maximum profit
+# 1280 11664.5 baseline model
+cutoff.log2 <- sort(post.valid.log2, decreasing=T)[n.mail.valid+1] # set cutoff based on n.mail.valid
+chat.valid.log2 <- ifelse(post.valid.log2>cutoff.log2, 1, 0) # mail to everyone above the cutoff
+#table(chat.valid.log1, c.valid) # classification table
+
+#Quadratic Discriminant Analysis
+
+model.qda1 <- qda(donr ~ reg1 + reg2 + reg3 + reg4 + home + chld + hinc  + I(hinc^2)+ genf + wrat + 
+                    avhv + npro + lgif + rgif + tdon + tlag + agif, 
+                  data.train.std.c)
+post.valid.qda1 <- predict(model.qda1, data.valid.std.c)$posterior[,2] 
+profit.qda1 <- cumsum(14.5*c.valid[order(post.valid.qda1, decreasing=T)]-2)
+n.mail.valid <- which.max(profit.qda1)
+c(n.mail.valid, max(profit.qda1))
+
+#K-Nearest Neighbors
+library(class)
+set.seed(1)
+knn.pred1 =knn(data.train.std.c,data.valid.std.c, c.train ,k=1)
+knn.pred5 =knn(data.train.std.c,data.valid.std.c, c.train ,k=5)
+knn.pred10 =knn(data.train.std.c,data.valid.std.c, c.train ,k=10)
+profit.knn1 <- cumsum(14.5*c.valid[order(knn.pred1, decreasing=T)]-2)
+profit.knn5 <- cumsum(14.5*c.valid[order(knn.pred5, decreasing=T)]-2)
+profit.knn10 <- cumsum(14.5*c.valid[order(knn.pred10, decreasing=T)]-2)
+n.mail.valid1 <- which.max(profit.knn1)
+c(n.mail.valid1, max(profit.knn1))
+n.mail.valid5 <- which.max(profit.knn5)
+c(n.mail.valid5, max(profit.knn5))
+n.mail.valid10 <- which.max(profit.knn10)
+c(n.mail.valid1, max(profit.knn10))
+
+
+##########################################################
+
+###Transformed Variables and Data Split for GAM model###
+charity.t <- charity
+# charity.t$avhv <- log(charity.t$avhv)
+# charity.t$incm <- log(charity.t$incm)
+# charity.t$inca <- log(charity.t$inca)
+charity.t$tgif <- log(charity.t$tgif)
+charity.t$lgif <- log(charity.t$lgif)
+#charity.t$rgif <- log(charity.t$rgif)
+#charity.t$tlag <- log(charity.t$tlag)
+# charity.t$agif <- log(charity.t$agif)
+plot_histogram(charity.t)
 
 # set up data for analysis
 data.train <- charity.t[charity$part=="train",]
@@ -81,7 +229,7 @@ data.valid.std.y <- data.frame(x.valid.std[c.valid==1,], damt=y.valid) # to pred
 x.test.std <- t((t(x.test)-x.train.mean)/x.train.sd) # standardize using training mean and sd
 data.test.std <- data.frame(x.test.std)
 
-##### CLASSIFICATION MODELING ######
+##### CLASSIFICATION MODELING GAM ######
 library(MASS)
 # logistic regression
 model.log1 <- glm(donr ~ reg1 + reg2 + reg3 + reg4 + home + chld + hinc + I(hinc^2) + genf + wrat + 
@@ -132,32 +280,9 @@ cutoff.lda1 <- sort(post.valid.lda1, decreasing=T)[n.mail.valid+1] # set cutoff 
 chat.valid.lda1 <- ifelse(post.valid.lda1>cutoff.lda1, 1, 0) # mail to everyone above the cutoff
 #table(chat.valid.lda1, c.valid) # classification table
 
-#Quadratic Discriminant Analysis
-
-model.qda1 <- qda(donr ~ reg1 + reg2 + reg3 + reg4 + home + chld + hinc  + I(hinc^2)+ genf + wrat + 
-                    avhv + npro + lgif + rgif + tdon + tlag + agif, 
-                  data.train.std.c)
-post.valid.qda1 <- predict(model.qda1, data.valid.std.c)$posterior[,2] 
-profit.qda1 <- cumsum(14.5*c.valid[order(post.valid.qda1, decreasing=T)]-2)
-n.mail.valid <- which.max(profit.qda1)
-c(n.mail.valid, max(profit.qda1))
+####ENTER GRADIENT BOOSTING CODE HERE ###
 
 
-#K-Nearest Neighbors
-library(class)
-set.seed(1)
-knn.pred1 =knn(data.train.std.c,data.valid.std.c, c.train ,k=1)
-knn.pred5 =knn(data.train.std.c,data.valid.std.c, c.train ,k=5)
-knn.pred10 =knn(data.train.std.c,data.valid.std.c, c.train ,k=10)
-profit.knn1 <- cumsum(14.5*c.valid[order(knn.pred1, decreasing=T)]-2)
-profit.knn5 <- cumsum(14.5*c.valid[order(knn.pred5, decreasing=T)]-2)
-profit.knn10 <- cumsum(14.5*c.valid[order(knn.pred10, decreasing=T)]-2)
-n.mail.valid1 <- which.max(profit.knn1)
-c(n.mail.valid1, max(profit.knn1))
-n.mail.valid5 <- which.max(profit.knn5)
-c(n.mail.valid5, max(profit.knn5))
-n.mail.valid10 <- which.max(profit.knn10)
-c(n.mail.valid1, max(profit.knn10))
 
 ##### PREDICTION MODELING ######
 # Least squares regression
